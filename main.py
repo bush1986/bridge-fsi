@@ -1,3 +1,4 @@
+
 """悬索桥抗风易损性分析框架。
 
 本模块展示了评估桥梁在随机风作用下失效概率的计算流程，
@@ -28,11 +29,13 @@ def run_coupled_simulation(sample):
     ------
     dict
         结构响应指标，如颤振裕度、疲劳损伤和峰值加速度。
+
     """
     pass
 
 
 def fit_response_surface(samples, responses):
+
     """对仿真数据拟合二次响应面模型。"""
     pass
 
@@ -76,4 +79,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
