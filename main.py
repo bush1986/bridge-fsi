@@ -16,12 +16,11 @@ from scipy.stats import norm, lognorm, rv_frozen, kstest
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import Ridge
 from scipy.optimize import brentq
-
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from pymoo.algorithms.moo.smpso import SMPSO
+from pymoo.algorithms.moo.nsga3 import NSGA3
+from pymoo.util.ref_dirs import get_reference_directions
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.optimize import minimize
-
 import itertools
 import logging
 
@@ -54,8 +53,8 @@ def generate_ccd_samples(
 
     自动支持任意维数，返回物理坐标 ``var`` 和编码坐标 ``x1``、``x2``、...。
     ``k`` 表示 CCD 半径与标准差的比例。
-    """
 
+    """
 
     var_names = list(center.keys())
     n = len(var_names)
@@ -100,13 +99,13 @@ def run_coupled_simulation(sample: Dict[str, float], *args, **kwargs) -> Dict[st
     return result
 
 
-
 def run_simulations_async(samples: List[Dict[str, float]], max_workers: int = 8, timeout: float | None = None) -> List[Dict[str, float]]:
     """并行执行多组流固耦合仿真。
 
     通过 ``ProcessPoolExecutor`` 异步调度 ``run_coupled_simulation``，
     并收集结果字典列表。超时和异常将记录警告。
     """
+
 
     results: List[Dict[str, float]] = []
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
@@ -149,7 +148,9 @@ class QuadraticRSM:
         delta: Dict[str, float],
         alpha: float = 0.0,
     ) -> "QuadraticRSM":
-        """拟合多项式系数，可在此嵌入 SMPSO 优化逻辑。"""
+
+        """拟合多项式系数，可在此嵌入 NSGA3 优化逻辑。"""
+
 
         self.center = center
         self.delta = delta
@@ -198,7 +199,8 @@ class QuadraticRSM:
 
 
     def optimize(self) -> None:
-        """利用 SMPSO 多目标优化响应面系数。"""
+        """利用 NSGA3 多目标优化响应面系数。"""
+
 
         if self.model is None:
             raise RuntimeError("请先调用 fit 生成初始模型")
@@ -221,7 +223,10 @@ class QuadraticRSM:
 
         problem = RSMProblem(self.model, self.samples, self.responses)
 
-        algo = SMPSO(pop_size=60)
+
+        ref_dirs = get_reference_directions("das-dennis", 2, n_points=60)
+        algo = NSGA3(pop_size=60, ref_dirs=ref_dirs)
+
         res = minimize(problem, algo, ("n_gen", 50), verbose=False)
 
         coeff_best = res.X[np.argmin(res.F[:, 0])]
@@ -374,7 +379,6 @@ def monte_carlo_capacity(
 def fit_fragility_curve(capacity_samples: np.ndarray) -> Tuple[float, float, float, float]:
     """对容量样本进行对数正态分布拟合，返回标准差及 KS 值。"""
 
-
     capacity_samples = capacity_samples[~np.isnan(capacity_samples)]
     shape, loc, scale = lognorm.fit(capacity_samples, floc=0)
     theta = scale
@@ -398,4 +402,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+
     main()
+
