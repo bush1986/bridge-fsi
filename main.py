@@ -11,6 +11,10 @@ from typing import Dict, Tuple, List
 
 import numpy as np
 import pandas as pd
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pymoo.algorithms.moo.smpso import SMPSO
+from pymoo.core.problem import ElementwiseProblem
+from pymoo.optimize import minimize
 
 from scipy.stats import norm, lognorm, rv_frozen, kstest
 from sklearn.preprocessing import PolynomialFeatures
@@ -66,22 +70,87 @@ def generate_ccd_samples(
 
     # 角点
     for signs in itertools.product([-1.0, 1.0], repeat=n):
-        phys = {v: center[v] + s * delta[v] for v, s in zip(var_names, signs)}
-        code = {f"x{i+1}": s for i, s in enumerate(signs)}
-        records.append(phys | code | {"type": "corner"})
+def run_simulations_async(samples: List[Dict[str, float]], max_workers: int = 8, timeout: float | None = None) -> List[Dict[str, float]]:
+    """并行执行多组流固耦合仿真。
 
-    # 轴点
-    for i in range(n):
-        for s in (-alpha_star, alpha_star):
-            phys = {v: center[v] for v in var_names}
-            phys[var_names[i]] += s * delta[var_names[i]]
-            code = {f"x{j+1}": 0.0 for j in range(n)}
-            code[f"x{i+1}"] = s
-            records.append(phys | code | {"type": "axial"})
+    通过 ``ProcessPoolExecutor`` 异步调度 ``run_coupled_simulation``，
+    并收集结果字典列表。超时和异常将记录警告。
+    """
 
-    df = pd.DataFrame(records)
-    df.attrs["center"] = center
-    df.attrs["delta"] = delta
+    results: List[Dict[str, float]] = []
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(run_coupled_simulation, s): s for s in samples}
+        for fut in as_completed(futures, timeout=timeout):
+            sample = futures[fut]
+            try:
+                res = fut.result()
+            except Exception as exc:  # pragma: no cover - 占位异常处理
+                logging.warning("仿真失败 %s: %s", sample, exc)
+                res = {"lambda": np.nan, "D": np.nan, "amax": np.nan}
+            results.append(res)
+    return results
+
+
+        self.samples: np.ndarray | None = None
+        self.responses: np.ndarray | None = None
+        self.samples = X
+        self.responses = responses
+        """利用 SMPSO 多目标优化响应面系数。"""
+
+        if self.model is None:
+            raise RuntimeError("请先调用 fit 生成初始模型")
+
+        n_coef = self.poly.fit_transform([[0] * len(self.var_names)]).shape[1]
+
+        class RSMProblem(ElementwiseProblem):
+            def __init__(self, model: Ridge, X: np.ndarray, y: np.ndarray) -> None:
+                super().__init__(n_var=n_coef, n_obj=2)
+                self.model = model
+                self.X = X
+                self.y = y
+
+            def _evaluate(self, x: np.ndarray, out: Dict[str, np.ndarray]) -> None:
+                self.model.coef_ = x
+                pred = self.model.predict(self.X)
+                mse = ((pred - self.y) ** 2).mean()
+                l2 = np.linalg.norm(x)
+                out["F"] = np.array([mse, l2])
+
+        problem = RSMProblem(self.model, self.samples, self.responses)
+
+        algo = SMPSO(pop_size=60)
+        res = minimize(problem, algo, ("n_gen", 50), verbose=False)
+        coeff_best = res.X[np.argmin(res.F[:, 0])]
+        self.model.coef_ = coeff_best
+        self.coeff = coeff_best
+        beta = 0.0
+            alpha_vec = grad_u / norm_grad
+            beta = np.dot(u, alpha_vec) - g / norm_grad
+            u_new = beta * alpha_vec
+            if np.linalg.norm(u_new - u) < tol and abs(g) < tol:
+        sim_results = run_simulations_async(samples.to_dict("records"))
+        responses = np.array([r["lambda"] - 1 for r in sim_results])
+        if abs(g_true_center) < 1e-3:
+            break
+        scale = max(scale * 0.8, 0.2)
+    mu_u = dists["U10"].mean()
+    std_u = dists["U10"].std()
+        u_low = 1.0
+        u_high = mu_u + 6 * std_u
+        if func(u_low) <= 0:
+            capacities.append(u_low)
+            continue
+        if func(u_high) >= 0:
+            capacities.append(np.nan)
+            continue
+            cap = brentq(func, u_low, u_high)
+def fit_fragility_curve(capacity_samples: np.ndarray) -> Tuple[float, float, float, float]:
+    """对容量样本进行对数正态分布拟合，返回标准差及 KS 值。"""
+
+    se_beta = beta / np.sqrt(2 * len(capacity_samples))
+    return theta, beta, se_beta, ks_stat
+    theta, beta, se_beta, ks = fit_fragility_curve(capacity)
+    print(theta, beta, se_beta, ks)
     return df
 
 
