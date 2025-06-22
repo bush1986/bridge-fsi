@@ -11,93 +11,84 @@ from typing import Dict, Tuple, List
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm, lognorm, rv_frozen
+from scipy.stats import norm, lognorm, rv_frozen, kstest
 from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import Ridge
+from scipy.optimize import brentq
+import itertools
+import logging
 
 
 def define_random_variables() -> Tuple[Dict[str, float], Dict[str, float], Dict[str, rv_frozen]]:
     """定义随机变量及其概率分布。
 
-    返回值包含均值中心 ``mu``、增量 ``delta`` 以及 ``scipy`` 分布对象 ``dists``。
+    返回均值 ``mu``、标准差 ``std`` 以及 ``scipy`` 分布对象 ``dists``。
+    CCD 半径将在采样阶段由 ``std`` 派生。
     """
 
     mu = {"U10": 32.0, "alpha": 0.0}
-    delta = {"U10": 8.0, "alpha": 2.0}
+    std = {"U10": 8.0, "alpha": 2.0}
     dists = {
-        "U10": norm(loc=mu["U10"], scale=delta["U10"]),
-        "alpha": norm(loc=mu["alpha"], scale=delta["alpha"]),
+        "U10": norm(loc=mu["U10"], scale=std["U10"]),
+        "alpha": norm(loc=mu["alpha"], scale=std["alpha"]),
     }
-    return mu, delta, dists
+    return mu, std, dists
 
 
 def generate_ccd_samples(
     center: Dict[str, float],
-    delta: Dict[str, float],
+    std: Dict[str, float],
+    k: float = 1.0,
     alpha_star: float = np.sqrt(2.0),
     n_center: int = 3,
 ) -> pd.DataFrame:
     """按照中央复合设计生成样本点。
 
-    返回同时含有物理坐标 ``U10``、``alpha`` 与编码坐标 ``x1``、``x2``。
+    自动支持任意维数，返回物理坐标 ``var`` 和编码坐标 ``x1``、``x2``、...。
+    ``k`` 表示 CCD 半径与标准差的比例。
     """
+
+    var_names = list(center.keys())
+    n = len(var_names)
+    delta = {v: k * std[v] for v in var_names}
 
     records: List[Dict[str, float]] = []
 
     # 中心点
+    code_zero = {f"x{i+1}": 0.0 for i in range(n)}
     for _ in range(n_center):
-        records.append(
-            {
-                "U10": center["U10"],
-                "alpha": center["alpha"],
-                "x1": 0.0,
-                "x2": 0.0,
-                "type": "center",
-            }
-        )
+        rec = {v: center[v] for v in var_names} | code_zero | {"type": "center"}
+        records.append(rec)
 
     # 角点
-    for s1 in (-1.0, 1.0):
-        for s2 in (-1.0, 1.0):
-            records.append(
-                {
-                    "U10": center["U10"] + s1 * delta["U10"],
-                    "alpha": center["alpha"] + s2 * delta["alpha"],
-                    "x1": s1,
-                    "x2": s2,
-                    "type": "corner",
-                }
-            )
+    for signs in itertools.product([-1.0, 1.0], repeat=n):
+        phys = {v: center[v] + s * delta[v] for v, s in zip(var_names, signs)}
+        code = {f"x{i+1}": s for i, s in enumerate(signs)}
+        records.append(phys | code | {"type": "corner"})
 
     # 轴点
-    for s1 in (-alpha_star, alpha_star):
-        records.append(
-            {
-                "U10": center["U10"] + s1 * delta["U10"],
-                "alpha": center["alpha"],
-                "x1": s1,
-                "x2": 0.0,
-                "type": "axial",
-            }
-        )
-    for s2 in (-alpha_star, alpha_star):
-        records.append(
-            {
-                "U10": center["U10"],
-                "alpha": center["alpha"] + s2 * delta["alpha"],
-                "x1": 0.0,
-                "x2": s2,
-                "type": "axial",
-            }
-        )
+    for i in range(n):
+        for s in (-alpha_star, alpha_star):
+            phys = {v: center[v] for v in var_names}
+            phys[var_names[i]] += s * delta[var_names[i]]
+            code = {f"x{j+1}": 0.0 for j in range(n)}
+            code[f"x{i+1}"] = s
+            records.append(phys | code | {"type": "axial"})
 
-    return pd.DataFrame(records)
+    df = pd.DataFrame(records)
+    df.attrs["center"] = center
+    df.attrs["delta"] = delta
+    return df
 
 
-def run_coupled_simulation(sample: Dict[str, float]) -> Dict[str, float]:
+def run_coupled_simulation(sample: Dict[str, float], *args, **kwargs) -> Dict[str, float]:
     """高保真流固耦合仿真占位函数。"""
 
+    logging.debug("start FSI simulation %s", sample)
     # TODO: 接入 ANSYS 等软件实现真实仿真
-    return {"lambda": 1.0, "D": 0.0, "amax": 0.0}
+    result = {"lambda": 1.0, "D": 0.0, "amax": 0.0}
+    logging.debug("finish FSI simulation %s", result)
+    return result
 
 
 @dataclass
@@ -108,17 +99,61 @@ class QuadraticRSM:
 
     def __post_init__(self) -> None:
         self.poly = PolynomialFeatures(degree=2, include_bias=True)
+        self.center: Dict[str, float] | None = None
+        self.delta: Dict[str, float] | None = None
+        self.var_names: List[str] | None = None
+        self.model: Ridge | None = None
 
-    def fit(self, samples: pd.DataFrame, responses: np.ndarray) -> "QuadraticRSM":
+    def fit(
+        self,
+        samples: pd.DataFrame,
+        responses: np.ndarray,
+        center: Dict[str, float],
+        delta: Dict[str, float],
+        alpha: float = 0.0,
+    ) -> "QuadraticRSM":
         """拟合多项式系数，可在此嵌入 SMPSO 优化逻辑。"""
 
-        X = self.poly.fit_transform(samples[["x1", "x2"]].values)
-        self.coeff, *_ = np.linalg.lstsq(X, responses, rcond=None)
+        self.center = center
+        self.delta = delta
+        self.var_names = list(center.keys())
+        X = self.poly.fit_transform(samples[[f"x{i+1}" for i in range(len(self.var_names))]].values)
+        self.model = Ridge(alpha=alpha, fit_intercept=False)
+        self.model.fit(X, responses)
+        self.coeff = self.model.coef_
         return self
 
+    def _ensure_encoded(self, samples: pd.DataFrame) -> pd.DataFrame:
+        if "x1" not in samples.columns:
+            for i, v in enumerate(self.var_names):
+                samples[f"x{i+1}"] = (samples[v] - self.center[v]) / self.delta[v]
+        return samples
+
     def predict(self, samples: pd.DataFrame) -> np.ndarray:
-        X = self.poly.transform(samples[["x1", "x2"]].values)
-        return X @ self.coeff
+        samples = self._ensure_encoded(samples.copy())
+        X = self.poly.transform(samples[[f"x{i+1}" for i in range(len(self.var_names))]].values)
+        return self.model.predict(X)
+
+    def gradient(self, sample: pd.DataFrame) -> np.ndarray:
+        """返回对物理变量的梯度。"""
+        sample = self._ensure_encoded(sample.copy())
+        x = sample[[f"x{i+1}" for i in range(len(self.var_names))]].values[0]
+
+        grad_x = np.zeros_like(x)
+        idx = 1
+        for i in range(len(x)):
+            grad_x[i] += self.coeff[idx]
+            idx += 1
+        for i in range(len(x)):
+            grad_x[i] += 2 * self.coeff[idx] * x[i]
+            idx += 1
+            for j in range(i + 1, len(x)):
+                grad_x[i] += self.coeff[idx] * x[j]
+                grad_x[j] += self.coeff[idx] * x[i]
+                idx += 1
+        # 转换为物理变量梯度
+        grad_physical = grad_x / np.array([self.delta[v] for v in self.var_names])
+        return grad_physical
 
     def optimize(self) -> None:
         """使用 SMPSO 调整系数。当前为占位方法。"""
@@ -133,14 +168,34 @@ class ReliabilitySolver:
         self.method = method
 
     def solve(
-        self, rsm: QuadraticRSM, dists: Dict[str, rv_frozen]
-    ) -> Tuple[float, Dict[str, float]]:
-        """执行 FORM 计算，返回 β 和设计点。"""
+        self, rsm: QuadraticRSM, dists: Dict[str, rv_frozen], max_iter: int = 20, tol: float = 1e-6
+    ) -> Tuple[float, Dict[str, float], float]:
+        """执行 FORM 计算，返回 β、设计点以及预测值。"""
 
-        # TODO: 实现 HL-RF 或 SORM 算法
-        beta = 0.0
-        design_point = {k: dist.mean() for k, dist in dists.items()}
-        return beta, design_point
+        mu = np.array([dist.mean() for dist in dists.values()])
+        sigma = np.array([dist.std() for dist in dists.values()])
+        var_names = list(dists.keys())
+
+        u = np.zeros_like(mu)
+        for _ in range(max_iter):
+            x = mu + sigma * u
+            sample = pd.DataFrame([{v: val for v, val in zip(var_names, x)}])
+            g = rsm.predict(sample)[0]
+            grad_x = rsm.gradient(sample)
+            grad_u = grad_x * sigma
+            norm_grad = np.linalg.norm(grad_u)
+            if norm_grad < 1e-12:
+                break
+            beta = (u @ grad_u - g) / norm_grad
+            u_new = (beta / norm_grad) * grad_u
+            if np.linalg.norm(u_new - u) < tol:
+                u = u_new
+                break
+            u = u_new
+        design_point = {v: mu_i + sigma_i * ui for v, mu_i, sigma_i, ui in zip(var_names, mu, sigma, u)}
+        g_pred_design = rsm.predict(pd.DataFrame([design_point]))[0]
+        beta = np.linalg.norm(u)
+        return beta, design_point, g_pred_design
 
 
 def update_sampling_center(
@@ -151,13 +206,15 @@ def update_sampling_center(
 ) -> Dict[str, float]:
     """根据真实值与预测值在直线段上线性插值更新中心。"""
 
+    if abs(g_true_center - g_pred_design) < 1e-6:
+        return center
     ratio = g_true_center / (g_true_center - g_pred_design)
     return {k: center[k] + ratio * (design_point[k] - center[k]) for k in center}
 
 
 def iterate_until_convergence(
     mu: Dict[str, float],
-    delta: Dict[str, float],
+    std: Dict[str, float],
     dists: Dict[str, rv_frozen],
     max_iter: int = 10,
     tol: float = 1e-2,
@@ -165,28 +222,28 @@ def iterate_until_convergence(
     """反复校正响应面直至设计点收敛。"""
 
     center = mu.copy()
+    scale = 1.0
     design_history: List[Dict[str, float]] = []
     rsm = QuadraticRSM()
 
     for _ in range(max_iter):
-        samples = generate_ccd_samples(center, delta)
-        # 占位响应：仅以 g=lambda-1 构造
+        delta = {k: scale * std[k] for k in std}
+        samples = generate_ccd_samples(center, std, k=scale)
         responses = np.array(
             [run_coupled_simulation(row)["lambda"] - 1 for row in samples.to_dict("records")]
         )
-        rsm.fit(samples, responses)
+        rsm.fit(samples, responses, center=center, delta=delta)
         solver = ReliabilitySolver()
-        beta, design = solver.solve(rsm, dists)
+        beta, design, g_pred_design = solver.solve(rsm, dists)
         design_history.append(design)
         if len(design_history) > 1:
             prev = np.array(list(design_history[-2].values()))
             curr = np.array(list(design.values()))
             if np.linalg.norm(curr - prev) < tol:
                 break
-        # 取第一个样本作为中心的真实 g 值占位
-        g_true_center = responses[0]
-        g_pred_center = rsm.predict(samples.iloc[[0]])[0]
-        center = update_sampling_center(center, g_true_center, design, g_pred_center)
+        g_true_center = run_coupled_simulation(center)["lambda"] - 1
+        center = update_sampling_center(center, g_true_center, design, g_pred_design)
+        scale *= 0.8
 
     return rsm, design_history
 
@@ -196,29 +253,40 @@ def monte_carlo_capacity(
 ) -> np.ndarray:
     """基于响应面的大样本容量估计。"""
 
-    u_samples = dists["U10"].rvs(size=size)
-    a_samples = dists["alpha"].rvs(size=size)
-    # TODO: 逐样本求解 g=0 的风速容量
-    return np.minimum(u_samples, u_samples)  # 占位实现
+    alpha_samples = dists["alpha"].rvs(size=size)
+    capacities = []
+    for a in alpha_samples:
+        def func(u: float) -> float:
+            return rsm.predict(pd.DataFrame([{"U10": u, "alpha": a}]))[0]
+
+        try:
+            cap = brentq(func, 0.1, 200.0)
+        except ValueError:
+            cap = np.nan
+        capacities.append(cap)
+
+    return np.array(capacities)
 
 
-def fit_fragility_curve(capacity_samples: np.ndarray) -> Tuple[float, float]:
-    """对容量样本进行对数正态分布拟合。"""
+def fit_fragility_curve(capacity_samples: np.ndarray) -> Tuple[float, float, float]:
+    """对容量样本进行对数正态分布拟合，并返回 KS 统计量。"""
 
+    capacity_samples = capacity_samples[~np.isnan(capacity_samples)]
     shape, loc, scale = lognorm.fit(capacity_samples, floc=0)
     theta = scale
     beta = shape
-    return theta, beta
+    ks_stat, _ = kstest(np.log(capacity_samples), "norm", args=(np.log(theta), beta))
+    return theta, beta, ks_stat
 
 
 def main() -> None:
     """程序主入口。"""
 
-    mu, delta, dists = define_random_variables()
-    rsm, history = iterate_until_convergence(mu, delta, dists)
+    mu, std, dists = define_random_variables()
+    rsm, history = iterate_until_convergence(mu, std, dists)
     capacity = monte_carlo_capacity(rsm, dists)
-    theta, beta = fit_fragility_curve(capacity)
-    print(theta, beta)
+    theta, beta, ks = fit_fragility_curve(capacity)
+    print(theta, beta, ks)
 
 
 if __name__ == "__main__":
