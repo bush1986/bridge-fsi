@@ -11,7 +11,8 @@ from typing import Dict, Tuple, List
 
 import numpy as np
 import pandas as pd
-
+from pymoo.algorithms.moo.nsga3 import NSGA3
+from pymoo.util.ref_dirs import get_reference_directions
 from scipy.stats import norm, lognorm, rv_frozen, kstest
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import Ridge
@@ -114,9 +115,10 @@ def run_simulations_async(samples: List[Dict[str, float]], max_workers: int = 8,
         for fut in as_completed(futures, timeout=timeout):
             sample = futures[fut]
             try:
-                res = fut.result()
-            except Exception as exc:  # pragma: no cover - 占位异常处理
-                logging.warning("仿真失败 %s: %s", sample, exc)
+        """拟合多项式系数，可在此嵌入 NSGA3 优化逻辑。"""
+        """利用 NSGA3 多目标优化响应面系数。"""
+        ref_dirs = get_reference_directions("das-dennis", 2, n_points=60)
+        algo = NSGA3(pop_size=60, ref_dirs=ref_dirs)
                 res = {"lambda": np.nan, "D": np.nan, "amax": np.nan}
             results.append(res)
     return results
