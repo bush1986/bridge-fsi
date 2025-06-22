@@ -16,6 +16,12 @@ from scipy.stats import norm, lognorm, rv_frozen, kstest
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import Ridge
 from scipy.optimize import brentq
+
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pymoo.algorithms.moo.smpso import SMPSO
+from pymoo.core.problem import ElementwiseProblem
+from pymoo.optimize import minimize
+
 import itertools
 import logging
 
@@ -37,7 +43,6 @@ def define_random_variables() -> Tuple[Dict[str, float], Dict[str, float], Dict[
     return mu, std, dists
 
 
-
 def generate_ccd_samples(
     center: Dict[str, float],
     std: Dict[str, float],
@@ -47,10 +52,10 @@ def generate_ccd_samples(
 ) -> pd.DataFrame:
     """按照中央复合设计生成样本点。
 
-
     自动支持任意维数，返回物理坐标 ``var`` 和编码坐标 ``x1``、``x2``、...。
     ``k`` 表示 CCD 半径与标准差的比例。
     """
+
 
     var_names = list(center.keys())
     n = len(var_names)
@@ -96,6 +101,28 @@ def run_coupled_simulation(sample: Dict[str, float], *args, **kwargs) -> Dict[st
 
 
 
+def run_simulations_async(samples: List[Dict[str, float]], max_workers: int = 8, timeout: float | None = None) -> List[Dict[str, float]]:
+    """并行执行多组流固耦合仿真。
+
+    通过 ``ProcessPoolExecutor`` 异步调度 ``run_coupled_simulation``，
+    并收集结果字典列表。超时和异常将记录警告。
+    """
+
+    results: List[Dict[str, float]] = []
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(run_coupled_simulation, s): s for s in samples}
+        for fut in as_completed(futures, timeout=timeout):
+            sample = futures[fut]
+            try:
+                res = fut.result()
+            except Exception as exc:  # pragma: no cover - 占位异常处理
+                logging.warning("仿真失败 %s: %s", sample, exc)
+                res = {"lambda": np.nan, "D": np.nan, "amax": np.nan}
+            results.append(res)
+    return results
+
+
+
 @dataclass
 class QuadraticRSM:
     """二次响应面模型。"""
@@ -109,6 +136,10 @@ class QuadraticRSM:
         self.delta: Dict[str, float] | None = None
         self.var_names: List[str] | None = None
         self.model: Ridge | None = None
+
+        self.samples: np.ndarray | None = None
+        self.responses: np.ndarray | None = None
+
 
     def fit(
         self,
@@ -124,6 +155,10 @@ class QuadraticRSM:
         self.delta = delta
         self.var_names = list(center.keys())
         X = self.poly.fit_transform(samples[[f"x{i+1}" for i in range(len(self.var_names))]].values)
+
+        self.samples = X
+        self.responses = responses
+
         self.model = Ridge(alpha=alpha, fit_intercept=False)
         self.model.fit(X, responses)
         self.coeff = self.model.coef_
@@ -163,9 +198,36 @@ class QuadraticRSM:
 
 
     def optimize(self) -> None:
-        """使用 SMPSO 调整系数。当前为占位方法。"""
+        """利用 SMPSO 多目标优化响应面系数。"""
 
-        pass
+        if self.model is None:
+            raise RuntimeError("请先调用 fit 生成初始模型")
+
+        n_coef = self.poly.fit_transform([[0] * len(self.var_names)]).shape[1]
+
+        class RSMProblem(ElementwiseProblem):
+            def __init__(self, model: Ridge, X: np.ndarray, y: np.ndarray) -> None:
+                super().__init__(n_var=n_coef, n_obj=2)
+                self.model = model
+                self.X = X
+                self.y = y
+
+            def _evaluate(self, x: np.ndarray, out: Dict[str, np.ndarray]) -> None:
+                self.model.coef_ = x
+                pred = self.model.predict(self.X)
+                mse = ((pred - self.y) ** 2).mean()
+                l2 = np.linalg.norm(x)
+                out["F"] = np.array([mse, l2])
+
+        problem = RSMProblem(self.model, self.samples, self.responses)
+
+        algo = SMPSO(pop_size=60)
+        res = minimize(problem, algo, ("n_gen", 50), verbose=False)
+
+        coeff_best = res.X[np.argmin(res.F[:, 0])]
+        self.model.coef_ = coeff_best
+        self.coeff = coeff_best
+
 
 
 class ReliabilitySolver:
@@ -185,6 +247,9 @@ class ReliabilitySolver:
         var_names = list(dists.keys())
 
         u = np.zeros_like(mu)
+
+        beta = 0.0
+
         for _ in range(max_iter):
             x = mu + sigma * u
             sample = pd.DataFrame([{v: val for v, val in zip(var_names, x)}])
@@ -194,9 +259,12 @@ class ReliabilitySolver:
             norm_grad = np.linalg.norm(grad_u)
             if norm_grad < 1e-12:
                 break
-            beta = (u @ grad_u - g) / norm_grad
-            u_new = (beta / norm_grad) * grad_u
-            if np.linalg.norm(u_new - u) < tol:
+
+            alpha_vec = grad_u / norm_grad
+            beta = np.dot(u, alpha_vec) - g / norm_grad
+            u_new = beta * alpha_vec
+            if np.linalg.norm(u_new - u) < tol and abs(g) < tol:
+
                 u = u_new
                 break
             u = u_new
@@ -245,9 +313,8 @@ def iterate_until_convergence(
 
         delta = {k: scale * std[k] for k in std}
         samples = generate_ccd_samples(center, std, k=scale)
-        responses = np.array(
-            [run_coupled_simulation(row)["lambda"] - 1 for row in samples.to_dict("records")]
-        )
+        sim_results = run_simulations_async(samples.to_dict("records"))
+        responses = np.array([r["lambda"] - 1 for r in sim_results])
         rsm.fit(samples, responses, center=center, delta=delta)
         solver = ReliabilitySolver()
         beta, design, g_pred_design = solver.solve(rsm, dists)
@@ -260,7 +327,10 @@ def iterate_until_convergence(
                 break
         g_true_center = run_coupled_simulation(center)["lambda"] - 1
         center = update_sampling_center(center, g_true_center, design, g_pred_design)
-        scale *= 0.8
+
+        if abs(g_true_center) < 1e-3:
+            break
+        scale = max(scale * 0.8, 0.2)
 
 
     return rsm, design_history
@@ -273,13 +343,26 @@ def monte_carlo_capacity(
 
 
     alpha_samples = dists["alpha"].rvs(size=size)
+    mu_u = dists["U10"].mean()
+    std_u = dists["U10"].std()
+
     capacities = []
     for a in alpha_samples:
         def func(u: float) -> float:
             return rsm.predict(pd.DataFrame([{"U10": u, "alpha": a}]))[0]
 
+
+        u_low = 1.0
+        u_high = mu_u + 6 * std_u
+        if func(u_low) <= 0:
+            capacities.append(u_low)
+            continue
+        if func(u_high) >= 0:
+            capacities.append(np.nan)
+            continue
         try:
-            cap = brentq(func, 0.1, 200.0)
+            cap = brentq(func, u_low, u_high)
+
         except ValueError:
             cap = np.nan
         capacities.append(cap)
@@ -287,15 +370,19 @@ def monte_carlo_capacity(
     return np.array(capacities)
 
 
-def fit_fragility_curve(capacity_samples: np.ndarray) -> Tuple[float, float, float]:
-    """对容量样本进行对数正态分布拟合，并返回 KS 统计量。"""
+
+def fit_fragility_curve(capacity_samples: np.ndarray) -> Tuple[float, float, float, float]:
+    """对容量样本进行对数正态分布拟合，返回标准差及 KS 值。"""
+
 
     capacity_samples = capacity_samples[~np.isnan(capacity_samples)]
     shape, loc, scale = lognorm.fit(capacity_samples, floc=0)
     theta = scale
     beta = shape
     ks_stat, _ = kstest(np.log(capacity_samples), "norm", args=(np.log(theta), beta))
-    return theta, beta, ks_stat
+
+    se_beta = beta / np.sqrt(2 * len(capacity_samples))
+    return theta, beta, se_beta, ks_stat
 
 
 
@@ -306,8 +393,8 @@ def main() -> None:
     mu, std, dists = define_random_variables()
     rsm, history = iterate_until_convergence(mu, std, dists)
     capacity = monte_carlo_capacity(rsm, dists)
-    theta, beta, ks = fit_fragility_curve(capacity)
-    print(theta, beta, ks)
+    theta, beta, se_beta, ks = fit_fragility_curve(capacity)
+    print(theta, beta, se_beta, ks)
 
 
 if __name__ == "__main__":
