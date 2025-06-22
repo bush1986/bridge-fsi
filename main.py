@@ -11,6 +11,7 @@ from typing import Dict, Tuple, List
 
 import numpy as np
 import pandas as pd
+
 from scipy.stats import norm, lognorm, rv_frozen, kstest
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import Ridge
@@ -21,6 +22,7 @@ import logging
 
 def define_random_variables() -> Tuple[Dict[str, float], Dict[str, float], Dict[str, rv_frozen]]:
     """定义随机变量及其概率分布。
+
 
     返回均值 ``mu``、标准差 ``std`` 以及 ``scipy`` 分布对象 ``dists``。
     CCD 半径将在采样阶段由 ``std`` 派生。
@@ -35,6 +37,7 @@ def define_random_variables() -> Tuple[Dict[str, float], Dict[str, float], Dict[
     return mu, std, dists
 
 
+
 def generate_ccd_samples(
     center: Dict[str, float],
     std: Dict[str, float],
@@ -43,6 +46,7 @@ def generate_ccd_samples(
     n_center: int = 3,
 ) -> pd.DataFrame:
     """按照中央复合设计生成样本点。
+
 
     自动支持任意维数，返回物理坐标 ``var`` 和编码坐标 ``x1``、``x2``、...。
     ``k`` 表示 CCD 半径与标准差的比例。
@@ -91,6 +95,7 @@ def run_coupled_simulation(sample: Dict[str, float], *args, **kwargs) -> Dict[st
     return result
 
 
+
 @dataclass
 class QuadraticRSM:
     """二次响应面模型。"""
@@ -99,6 +104,7 @@ class QuadraticRSM:
 
     def __post_init__(self) -> None:
         self.poly = PolynomialFeatures(degree=2, include_bias=True)
+
         self.center: Dict[str, float] | None = None
         self.delta: Dict[str, float] | None = None
         self.var_names: List[str] | None = None
@@ -155,6 +161,7 @@ class QuadraticRSM:
         grad_physical = grad_x / np.array([self.delta[v] for v in self.var_names])
         return grad_physical
 
+
     def optimize(self) -> None:
         """使用 SMPSO 调整系数。当前为占位方法。"""
 
@@ -168,6 +175,7 @@ class ReliabilitySolver:
         self.method = method
 
     def solve(
+
         self, rsm: QuadraticRSM, dists: Dict[str, rv_frozen], max_iter: int = 20, tol: float = 1e-6
     ) -> Tuple[float, Dict[str, float], float]:
         """执行 FORM 计算，返回 β、设计点以及预测值。"""
@@ -198,6 +206,7 @@ class ReliabilitySolver:
         return beta, design_point, g_pred_design
 
 
+
 def update_sampling_center(
     center: Dict[str, float],
     g_true_center: float,
@@ -206,15 +215,19 @@ def update_sampling_center(
 ) -> Dict[str, float]:
     """根据真实值与预测值在直线段上线性插值更新中心。"""
 
+
     if abs(g_true_center - g_pred_design) < 1e-6:
         return center
+
     ratio = g_true_center / (g_true_center - g_pred_design)
     return {k: center[k] + ratio * (design_point[k] - center[k]) for k in center}
 
 
 def iterate_until_convergence(
     mu: Dict[str, float],
+
     std: Dict[str, float],
+
     dists: Dict[str, rv_frozen],
     max_iter: int = 10,
     tol: float = 1e-2,
@@ -222,11 +235,14 @@ def iterate_until_convergence(
     """反复校正响应面直至设计点收敛。"""
 
     center = mu.copy()
+
     scale = 1.0
+
     design_history: List[Dict[str, float]] = []
     rsm = QuadraticRSM()
 
     for _ in range(max_iter):
+
         delta = {k: scale * std[k] for k in std}
         samples = generate_ccd_samples(center, std, k=scale)
         responses = np.array(
@@ -235,6 +251,7 @@ def iterate_until_convergence(
         rsm.fit(samples, responses, center=center, delta=delta)
         solver = ReliabilitySolver()
         beta, design, g_pred_design = solver.solve(rsm, dists)
+
         design_history.append(design)
         if len(design_history) > 1:
             prev = np.array(list(design_history[-2].values()))
@@ -245,6 +262,7 @@ def iterate_until_convergence(
         center = update_sampling_center(center, g_true_center, design, g_pred_design)
         scale *= 0.8
 
+
     return rsm, design_history
 
 
@@ -252,6 +270,7 @@ def monte_carlo_capacity(
     rsm: QuadraticRSM, dists: Dict[str, rv_frozen], size: int = 1000
 ) -> np.ndarray:
     """基于响应面的大样本容量估计。"""
+
 
     alpha_samples = dists["alpha"].rvs(size=size)
     capacities = []
@@ -279,8 +298,10 @@ def fit_fragility_curve(capacity_samples: np.ndarray) -> Tuple[float, float, flo
     return theta, beta, ks_stat
 
 
+
 def main() -> None:
     """程序主入口。"""
+
 
     mu, std, dists = define_random_variables()
     rsm, history = iterate_until_convergence(mu, std, dists)
