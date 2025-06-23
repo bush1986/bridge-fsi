@@ -11,7 +11,8 @@ from typing import Dict, Tuple, List
 
 import numpy as np
 import pandas as pd
-from scipy.stats import gumbel_r, uniform, lognorm, rv_frozen, kstest
+from scipy.stats import gumbel_r, uniform, lognorm, kstest
+from scipy.stats._distn_infrastructure import rv_frozen
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import Ridge
 from scipy.optimize import brentq
@@ -20,7 +21,6 @@ from pymoo.algorithms.moo.nsga3 import NSGA3
 from pymoo.util.ref_dirs import get_reference_directions
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.optimize import minimize
-import itertools
 import logging
 
 
@@ -88,42 +88,74 @@ def generate_ccd_samples(
     alpha_star: float = np.sqrt(2.0),
     n_center: int = 3,
 ) -> pd.DataFrame:
-    """按照中央复合设计生成样本点。
+    """生成二维固定版中央复合设计样本。
 
-    自动支持任意维数，返回物理坐标 ``var`` 和编码坐标 ``x1``、``x2``、...。
-    ``k`` 表示 CCD 半径与标准差的比例。
+    参数
+    ------
+    center : dict
+        ``{"U10": ..., "alpha": ...}``，采样中心。
+    std : dict
+        变量标准差，同上格式。
+    k : float, 默认 1.0
+        半径系数 ``delta_v = k * std[v]``。
+    alpha_star : float, 默认 ``sqrt(2)``
+        轴点在编码空间的位置。
+    n_center : int, 默认 3
+        中心点重复次数。
+
+    返回
+    ----
+    pandas.DataFrame
+        包含 ``U10``、``alpha``、``x1``、``x2`` 以及 ``type`` 列。
+        ``attrs`` 字段保存 ``center`` 与 ``delta`` 字典。
     """
 
-    var_names = list(center.keys())
-    n = len(var_names)
-    delta = {v: k * std[v] for v in var_names}
+    delta_u10 = k * std["U10"]
+    delta_alpha = k * std["alpha"]
 
     records: List[Dict[str, float]] = []
 
     # 中心点
-    code_zero = {f"x{i+1}": 0.0 for i in range(n)}
     for _ in range(n_center):
-        rec = {v: center[v] for v in var_names} | code_zero | {"type": "center"}
-        records.append(rec)
+        records.append(
+            {
+                "U10": center["U10"],
+                "alpha": center["alpha"],
+                "x1": 0.0,
+                "x2": 0.0,
+                "type": "center",
+            }
+        )
 
-    # 角点
-    for signs in itertools.product([-1.0, 1.0], repeat=n):
-        phys = {v: center[v] + s * delta[v] for v, s in zip(var_names, signs)}
-        code = {f"x{i+1}": s for i, s in enumerate(signs)}
-        records.append(phys | code | {"type": "corner"})
+    # 角点 (±1, ±1)
+    for x1 in (-1.0, 1.0):
+        for x2 in (-1.0, 1.0):
+            records.append(
+                {
+                    "U10": center["U10"] + x1 * delta_u10,
+                    "alpha": center["alpha"] + x2 * delta_alpha,
+                    "x1": x1,
+                    "x2": x2,
+                    "type": "corner",
+                }
+            )
 
-    # 轴点
-    for i in range(n):
-        for s in (-alpha_star, alpha_star):
-            phys = {v: center[v] for v in var_names}
-            phys[var_names[i]] += s * delta[var_names[i]]
-            code = {f"x{j+1}": 0.0 for j in range(n)}
-            code[f"x{i+1}"] = s
-            records.append(phys | code | {"type": "axial"})
+    # 轴点 (±α*, 0) 与 (0, ±α*)
+    axes = [(alpha_star, 0.0), (-alpha_star, 0.0), (0.0, alpha_star), (0.0, -alpha_star)]
+    for x1, x2 in axes:
+        records.append(
+            {
+                "U10": center["U10"] + x1 * delta_u10,
+                "alpha": center["alpha"] + x2 * delta_alpha,
+                "x1": x1,
+                "x2": x2,
+                "type": "axial",
+            }
+        )
 
     df = pd.DataFrame(records)
     df.attrs["center"] = center
-    df.attrs["delta"] = delta
+    df.attrs["delta"] = {"U10": delta_u10, "alpha": delta_alpha}
     return df
 
 
