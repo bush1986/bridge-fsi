@@ -5,10 +5,8 @@
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Dict, Tuple, List
-
 import numpy as np
 import pandas as pd
 from scipy.stats import gumbel_r, uniform, lognorm, kstest
@@ -49,6 +47,7 @@ def define_random_variables(
 
     若 ``allow_override=True``，可通过 ``kwargs`` 覆盖上述参数。
     返回 ``mu``、``std`` 及 ``dists`` 三个字典。
+
     """
 
     if allow_override:
@@ -176,6 +175,7 @@ def run_simulations_async(samples: List[Dict[str, float]], max_workers: int = 8,
     并收集结果字典列表。超时和异常将记录警告。
     """
 
+
     results: List[Dict[str, float]] = []
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(run_coupled_simulation, s): s for s in samples}
@@ -190,6 +190,7 @@ def run_simulations_async(samples: List[Dict[str, float]], max_workers: int = 8,
     return results
 
 
+
 @dataclass
 class QuadraticRSM:
     """二次响应面模型。"""
@@ -198,10 +199,12 @@ class QuadraticRSM:
 
     def __post_init__(self) -> None:
         self.poly = PolynomialFeatures(degree=2, include_bias=True)
+
         self.center: Dict[str, float] | None = None
         self.delta: Dict[str, float] | None = None
         self.var_names: List[str] | None = None
         self.model: Ridge | None = None
+
         self.samples: np.ndarray | None = None
         self.responses: np.ndarray | None = None
 
@@ -213,12 +216,14 @@ class QuadraticRSM:
         delta: Dict[str, float],
         alpha: float = 0.0,
     ) -> "QuadraticRSM":
+
         """拟合多项式系数，可在此嵌入 NSGA3 优化逻辑。"""
 
         self.center = center
         self.delta = delta
         self.var_names = list(center.keys())
         X = self.poly.fit_transform(samples[[f"x{i+1}" for i in range(len(self.var_names))]].values)
+
         self.samples = X
         self.responses = responses
         self.model = Ridge(alpha=alpha, fit_intercept=False)
@@ -258,6 +263,7 @@ class QuadraticRSM:
         grad_physical = grad_x / np.array([self.delta[v] for v in self.var_names])
         return grad_physical
 
+
     def optimize(self) -> None:
         """利用 NSGA3 多目标优化响应面系数。"""
 
@@ -282,8 +288,10 @@ class QuadraticRSM:
 
         problem = RSMProblem(self.model, self.samples, self.responses)
 
+
         ref_dirs = get_reference_directions("das-dennis", 2, n_points=60)
         algo = NSGA3(pop_size=60, ref_dirs=ref_dirs)
+
         res = minimize(problem, algo, ("n_gen", 50), verbose=False)
 
         coeff_best = res.X[np.argmin(res.F[:, 0])]
@@ -291,13 +299,14 @@ class QuadraticRSM:
         self.coeff = coeff_best
 
 
+
 class ReliabilitySolver:
     """可靠度计算器，可选择 FORM 或其他算法。"""
 
     def __init__(self, method: str = "HL-RF") -> None:
         self.method = method
-
     def solve(
+
         self, rsm: QuadraticRSM, dists: Dict[str, rv_frozen], max_iter: int = 20, tol: float = 1e-6
     ) -> Tuple[float, Dict[str, float], float]:
         """执行 FORM 计算，返回 β、设计点以及预测值。"""
@@ -305,9 +314,7 @@ class ReliabilitySolver:
         mu = np.array([dist.mean() for dist in dists.values()])
         sigma = np.array([dist.std() for dist in dists.values()])
         var_names = list(dists.keys())
-
         u = np.zeros_like(mu)
-        beta = 0.0
         for _ in range(max_iter):
             x = mu + sigma * u
             sample = pd.DataFrame([{v: val for v, val in zip(var_names, x)}])
@@ -317,6 +324,7 @@ class ReliabilitySolver:
             norm_grad = np.linalg.norm(grad_u)
             if norm_grad < 1e-12:
                 break
+
             alpha_vec = grad_u / norm_grad
             beta = np.dot(u, alpha_vec) - g / norm_grad
             u_new = beta * alpha_vec
@@ -338,8 +346,10 @@ def update_sampling_center(
 ) -> Dict[str, float]:
     """根据真实值与预测值在直线段上线性插值更新中心。"""
 
+
     if abs(g_true_center - g_pred_design) < 1e-6:
         return center
+
     ratio = g_true_center / (g_true_center - g_pred_design)
     return {k: center[k] + ratio * (design_point[k] - center[k]) for k in center}
 
@@ -352,7 +362,6 @@ def iterate_until_convergence(
     tol: float = 1e-2,
 ) -> Tuple[QuadraticRSM, List[Dict[str, float]]]:
     """反复校正响应面直至设计点收敛。"""
-
     center = mu.copy()
     scale = 1.0
     design_history: List[Dict[str, float]] = []
@@ -380,7 +389,6 @@ def iterate_until_convergence(
 
     return rsm, design_history
 
-
 def monte_carlo_capacity(
     rsm: QuadraticRSM, dists: Dict[str, rv_frozen], size: int = 1000
 ) -> np.ndarray:
@@ -393,7 +401,6 @@ def monte_carlo_capacity(
     for a in alpha_samples:
         def func(u: float) -> float:
             return rsm.predict(pd.DataFrame([{"U10": u, "alpha": a}]))[0]
-
         u_low = 1.0
         u_high = mu_u + 6 * std_u
         if func(u_low) <= 0:
@@ -425,13 +432,19 @@ def fit_fragility_curve(capacity_samples: np.ndarray) -> Tuple[float, float, flo
 
 def main() -> None:
     """程序主入口。"""
-
     mu, std, dists = define_random_variables()
     rsm, history = iterate_until_convergence(mu, std, dists)
     capacity = monte_carlo_capacity(rsm, dists)
     theta, beta, se_beta, ks = fit_fragility_curve(capacity)
     print(theta, beta, se_beta, ks)
 
+def main() -> None:
+    """程序主入口。"""
+    mu, std, dists = define_random_variables()
+    rsm, history = iterate_until_convergence(mu, std, dists)
+    capacity = monte_carlo_capacity(rsm, dists)
+    theta, beta, se_beta, ks = fit_fragility_curve(capacity)
+    print(theta, beta, se_beta, ks)
 
 if __name__ == "__main__":
     main()
