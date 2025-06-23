@@ -158,6 +158,7 @@ def run_simulations_async(samples: List[Dict[str, float]], max_workers: int = 8,
     return results
 
 
+
 @dataclass
 class QuadraticRSM:
     """二次响应面模型。"""
@@ -166,10 +167,12 @@ class QuadraticRSM:
 
     def __post_init__(self) -> None:
         self.poly = PolynomialFeatures(degree=2, include_bias=True)
+
         self.center: Dict[str, float] | None = None
         self.delta: Dict[str, float] | None = None
         self.var_names: List[str] | None = None
         self.model: Ridge | None = None
+
         self.samples: np.ndarray | None = None
         self.responses: np.ndarray | None = None
 
@@ -181,14 +184,17 @@ class QuadraticRSM:
         delta: Dict[str, float],
         alpha: float = 0.0,
     ) -> "QuadraticRSM":
+
         """拟合多项式系数，可在此嵌入 NSGA3 优化逻辑。"""
 
         self.center = center
         self.delta = delta
         self.var_names = list(center.keys())
         X = self.poly.fit_transform(samples[[f"x{i+1}" for i in range(len(self.var_names))]].values)
+
         self.samples = X
         self.responses = responses
+
         self.model = Ridge(alpha=alpha, fit_intercept=False)
         self.model.fit(X, responses)
         self.coeff = self.model.coef_
@@ -226,6 +232,7 @@ class QuadraticRSM:
         grad_physical = grad_x / np.array([self.delta[v] for v in self.var_names])
         return grad_physical
 
+
     def optimize(self) -> None:
         """利用 NSGA3 多目标优化响应面系数。"""
 
@@ -250,13 +257,16 @@ class QuadraticRSM:
 
         problem = RSMProblem(self.model, self.samples, self.responses)
 
+
         ref_dirs = get_reference_directions("das-dennis", 2, n_points=60)
         algo = NSGA3(pop_size=60, ref_dirs=ref_dirs)
+
         res = minimize(problem, algo, ("n_gen", 50), verbose=False)
 
         coeff_best = res.X[np.argmin(res.F[:, 0])]
         self.model.coef_ = coeff_best
         self.coeff = coeff_best
+
 
 
 class ReliabilitySolver:
@@ -266,6 +276,7 @@ class ReliabilitySolver:
         self.method = method
 
     def solve(
+
         self, rsm: QuadraticRSM, dists: Dict[str, rv_frozen], max_iter: int = 20, tol: float = 1e-6
     ) -> Tuple[float, Dict[str, float], float]:
         """执行 FORM 计算，返回 β、设计点以及预测值。"""
@@ -275,7 +286,7 @@ class ReliabilitySolver:
         var_names = list(dists.keys())
 
         u = np.zeros_like(mu)
-        beta = 0.0
+
         for _ in range(max_iter):
             x = mu + sigma * u
             sample = pd.DataFrame([{v: val for v, val in zip(var_names, x)}])
@@ -285,10 +296,12 @@ class ReliabilitySolver:
             norm_grad = np.linalg.norm(grad_u)
             if norm_grad < 1e-12:
                 break
+
             alpha_vec = grad_u / norm_grad
             beta = np.dot(u, alpha_vec) - g / norm_grad
             u_new = beta * alpha_vec
             if np.linalg.norm(u_new - u) < tol and abs(g) < tol:
+
                 u = u_new
                 break
             u = u_new
@@ -296,6 +309,7 @@ class ReliabilitySolver:
         g_pred_design = rsm.predict(pd.DataFrame([design_point]))[0]
         beta = np.linalg.norm(u)
         return beta, design_point, g_pred_design
+
 
 
 def update_sampling_center(
@@ -306,8 +320,10 @@ def update_sampling_center(
 ) -> Dict[str, float]:
     """根据真实值与预测值在直线段上线性插值更新中心。"""
 
+
     if abs(g_true_center - g_pred_design) < 1e-6:
         return center
+
     ratio = g_true_center / (g_true_center - g_pred_design)
     return {k: center[k] + ratio * (design_point[k] - center[k]) for k in center}
 
@@ -315,6 +331,7 @@ def update_sampling_center(
 def iterate_until_convergence(
     mu: Dict[str, float],
     std: Dict[str, float],
+
     dists: Dict[str, rv_frozen],
     max_iter: int = 10,
     tol: float = 1e-2,
@@ -322,11 +339,14 @@ def iterate_until_convergence(
     """反复校正响应面直至设计点收敛。"""
 
     center = mu.copy()
+
     scale = 1.0
+
     design_history: List[Dict[str, float]] = []
     rsm = QuadraticRSM()
 
     for _ in range(max_iter):
+
         delta = {k: scale * std[k] for k in std}
         samples = generate_ccd_samples(center, std, k=scale)
         sim_results = run_simulations_async(samples.to_dict("records"))
@@ -334,6 +354,7 @@ def iterate_until_convergence(
         rsm.fit(samples, responses, center=center, delta=delta)
         solver = ReliabilitySolver()
         beta, design, g_pred_design = solver.solve(rsm, dists)
+
         design_history.append(design)
         if len(design_history) > 1:
             prev = np.array(list(design_history[-2].values()))
@@ -342,9 +363,11 @@ def iterate_until_convergence(
                 break
         g_true_center = run_coupled_simulation(center)["lambda"] - 1
         center = update_sampling_center(center, g_true_center, design, g_pred_design)
+
         if abs(g_true_center) < 1e-3:
             break
         scale = max(scale * 0.8, 0.2)
+
 
     return rsm, design_history
 
@@ -354,9 +377,11 @@ def monte_carlo_capacity(
 ) -> np.ndarray:
     """基于响应面的大样本容量估计。"""
 
+
     alpha_samples = dists["alpha"].rvs(size=size)
     mu_u = dists["U10"].mean()
     std_u = dists["U10"].std()
+
     capacities = []
     for a in alpha_samples:
         def func(u: float) -> float:
@@ -372,6 +397,7 @@ def monte_carlo_capacity(
             continue
         try:
             cap = brentq(func, u_low, u_high)
+
         except ValueError:
             cap = np.nan
         capacities.append(cap)
@@ -391,15 +417,14 @@ def fit_fragility_curve(capacity_samples: np.ndarray) -> Tuple[float, float, flo
     return theta, beta, se_beta, ks_stat
 
 
+
 def main() -> None:
     """程序主入口。"""
-
     mu, std, dists = define_random_variables()
     rsm, history = iterate_until_convergence(mu, std, dists)
     capacity = monte_carlo_capacity(rsm, dists)
     theta, beta, se_beta, ks = fit_fragility_curve(capacity)
     print(theta, beta, se_beta, ks)
-
 
 if __name__ == "__main__":
     main()
