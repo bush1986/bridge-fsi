@@ -5,10 +5,8 @@
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Dict, Tuple, List
-
 import numpy as np
 import pandas as pd
 from scipy.stats import gumbel_r, uniform, lognorm, kstest
@@ -22,7 +20,6 @@ from pymoo.util.ref_dirs import get_reference_directions
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.optimize import minimize
 import logging
-
 logging.basicConfig(level=logging.INFO)
 
 
@@ -203,6 +200,7 @@ def run_simulations_async(samples: List[Dict[str, float]], max_workers: int = 8,
     通过 ``ProcessPoolExecutor`` 异步调度 ``run_coupled_simulation``，
     并收集结果字典列表。超时和异常将记录警告。
     """
+
 
     results: List[Dict[str, float]] = []
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
@@ -463,7 +461,6 @@ def main() -> None:
     capacity = monte_carlo_capacity(rsm, dists)
     theta, beta, se_beta, ks = fit_fragility_curve(capacity)
     print(theta, beta, se_beta, ks)
-
 
 if __name__ == "__main__":
     main()
