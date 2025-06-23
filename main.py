@@ -21,6 +21,8 @@ from pymoo.core.problem import ElementwiseProblem
 from pymoo.optimize import minimize
 import logging
 
+logging.basicConfig(level=logging.INFO)
+
 
 def define_random_variables(
     *,
@@ -159,12 +161,38 @@ def generate_ccd_samples(
 
 
 def run_coupled_simulation(sample: Dict[str, float], *args, **kwargs) -> Dict[str, float]:
-    """高保真流固耦合仿真占位函数。"""
+    """虚拟流固耦合仿真，用确定性公式加随机扰动生成结果。
+
+    参数
+    ------
+    sample : dict
+        包含 ``U10`` 与 ``alpha`` 的取值。
+    kwargs : dict
+        可选 ``seed`` 控制随机数种子，保证结果可复现。
+
+    返回
+    ----
+    dict
+        ``{"lambda": float, "D": float, "amax": float}``
+    """
 
     logging.debug("start FSI simulation %s", sample)
-    # TODO: 接入 ANSYS 等软件实现真实仿真
-    result = {"lambda": 1.0, "D": 0.0, "amax": 0.0}
-    logging.debug("finish FSI simulation %s", result)
+
+    rng = np.random.default_rng(kwargs.get("seed"))
+    u10 = sample["U10"]
+    alpha = sample["alpha"]
+
+    lam = (
+        1.0
+        - 0.002 * (u10 - 30.0) ** 2
+        - 0.03 * (alpha - 1.5)
+        + rng.normal(0.0, 0.01)
+    )
+    d_val = 0.005 * u10 + 0.001 * alpha + rng.normal(0.0, 0.0005)
+    amax = 3.0 + 0.08 * u10 + 0.4 * alpha + rng.normal(0.0, 0.05)
+
+    result = {"lambda": lam, "D": d_val, "amax": amax}
+    logging.debug("FSI pseudo result %s", result)
     return result
 
 
@@ -339,6 +367,10 @@ class ReliabilitySolver:
 
 
 def update_sampling_center(
+        try:
+            rsm.optimize()
+        except Exception as exc:
+            logging.warning("NSGA-III optimize skipped: %s", exc)
     center: Dict[str, float],
     g_true_center: float,
     design_point: Dict[str, float],
