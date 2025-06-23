@@ -11,16 +11,57 @@ from typing import Dict, Tuple, List
 
 import numpy as np
 import pandas as pd
+from scipy.stats import gumbel_r, uniform, lognorm, rv_frozen, kstest
+def define_random_variables(
+    *,
+    V_b_100: float = 25.8,
+    z_ref: float = 1502.4,
+    z_bridge: float = 1363.0,
+    k_valley: float = 1.2,
+    beta_coeff: float = 0.10,
+    allow_override: bool = True,
+    **kwargs: float,
+) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, rv_frozen]]:
+    """计算基本风速 ``U10`` 与迎风攻角 ``alpha`` 的统计量及分布。
 
-from scipy.stats import norm, lognorm, rv_frozen, kstest
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import Ridge
-from scipy.optimize import brentq
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from pymoo.algorithms.moo.nsga3 import NSGA3
-from pymoo.util.ref_dirs import get_reference_directions
-from pymoo.core.problem import ElementwiseProblem
-from pymoo.optimize import minimize
+    参数默认取自《公路桥梁抗风设计规范》（JTG D60-01-2004）。
+
+    算法步骤：
+    1. 海拔修正： ``V_b(z) = V_b_ref * (1 + 0.0007\,(z - z_ref))``；
+       将 ``V_b_100`` 从 ``z_ref`` 修正至 ``z_bridge``。
+    2. 乘以山谷系数 ``k_valley`` 得设计风速 ``V_design``。
+    3. 假设极值服从 GumbelⅠ型分布，尺度 ``β = beta_coeff * V_design``，
+       由 ``x_T = μ - β\ln[-\ln(1-1/T)]``(``T=100``) 反求位置参数 ``μ``。
+       平均值 ``mean = μ + γβ``，标准差 ``std = πβ/√6``。
+    4. 攻角 ``alpha`` 取均匀分布 ``U(0,3°)``。
+
+    若 ``allow_override=True``，可通过 ``kwargs`` 覆盖上述参数。
+    返回 ``mu``、``std`` 及 ``dists`` 三个字典。
+    if allow_override:
+        V_b_100 = kwargs.get("V_b_100", V_b_100)
+        z_ref = kwargs.get("z_ref", z_ref)
+        z_bridge = kwargs.get("z_bridge", z_bridge)
+        k_valley = kwargs.get("k_valley", k_valley)
+        beta_coeff = kwargs.get("beta_coeff", beta_coeff)
+
+    # 海拔修正与山谷系数
+    V_b_z = V_b_100 * (1 + 0.0007 * (z_bridge - z_ref))
+    V_design = V_b_z * k_valley
+
+    # Gumbel 分布参数
+    beta = beta_coeff * V_design
+    mu_loc = V_design + beta * np.log(-np.log(1 - 1 / 100))
+    mean_u10 = mu_loc + 0.5772156649 * beta
+    std_u10 = np.pi * beta / np.sqrt(6.0)
+
+    # 攻角分布
+    mu_alpha = 1.5
+    std_alpha = 3.0 / np.sqrt(12.0)
+
+    mu = {"U10": mean_u10, "alpha": mu_alpha}
+    std = {"U10": std_u10, "alpha": std_alpha}
+        "U10": gumbel_r(loc=mu_loc, scale=beta),
+        "alpha": uniform(loc=0.0, scale=3.0),
 import itertools
 import logging
 
