@@ -17,4 +17,3 @@ def test_generate_ccd_samples():
     delta = df.attrs["delta"]
     assert delta["U10"] == 5.0
     assert delta["alpha"] == 1.0
-
