@@ -17,8 +17,10 @@ import yaml
 from scipy.optimize import brentq
 from scipy.stats import gumbel_r, kstest, lognorm, uniform
 from scipy.stats._distn_infrastructure import rv_frozen
+
 from scipy.interpolate import interp1d
 from scipy.linalg import eig
+
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import PolynomialFeatures
 
@@ -161,6 +163,7 @@ def run_simplified_simulation(sample: Dict[str, float], *, seed: Optional[int] =
     return {"Ucr": ucr, "sigma_q": sigma_q, "sigma_a": sigma_a}
 
 
+
 def calculate_flutter_speed(
     flutter_derivatives: Dict[str, List[float]],
     bridge_params: Dict[str, float],
@@ -239,7 +242,6 @@ def calculate_flutter_speed(
             critical_speed = u_prev + (0 - d_prev) * (u - u_prev) / (min_damp - d_prev)
             flutter_freq = freq_at_min
     return critical_speed, flutter_freq, damping_results
-
 
 def run_coupled_simulation(fsi_manager: Optional[FSISimulationManager], sample: Dict[str, float], *, use_fsi: bool = True, seed: Optional[int] = None) -> Dict[str, float]:
     if fsi_manager and use_fsi:
@@ -383,11 +385,11 @@ def create_limit_state(expr: str) -> Callable[[float, Dict[str, float]], float]:
         return eval(expr, {}, {"Ucr": ucr, **sample})
     return func
 
+
 # Normalized limit-state function: (Ucr - U10)/Ucr
 def create_normalized_limit_state() -> Callable[[float, Dict[str, float]], float]:
     """Return normalized residual safety margin."""
     return lambda ucr, sample: (ucr - sample["U10"]) / ucr
-
 
 class ReliabilitySolver:
     def __init__(self, g_func: Callable[[float, Dict[str, float]], float]) -> None:
@@ -568,7 +570,6 @@ def compute_annual_pf(dists: Dict[str, rv_frozen], cap_pair: Tuple[np.ndarray, n
     u10_samples = dists["U10"].rvs(size=n_mc, random_state=rng)
     return float(np.mean(u10_samples > cap_samples))
 
-
 # ---------------------------------------------------------------------------
 # Main entry
 # ---------------------------------------------------------------------------
@@ -584,6 +585,7 @@ def main(log_level: str = "INFO") -> None:
     pop_size = cfg.get("nsga_pop", 80)
     n_gen = cfg.get("nsga_gen", 60)
     seed = cfg.get("random_seed", 42)
+    g_expr = cfg.get("limit_state", "Ucr - U10")
     sampling_cfg = cfg.get("sampling", {"initial_scale": 1.0, "shrink": 0.8, "min_scale": 0.2})
     thresholds = cfg.get("thresholds", {})
     use_fsi = cfg.get("use_fsi", True) and WB_AVAILABLE
@@ -624,7 +626,6 @@ def main(log_level: str = "INFO") -> None:
         print(f"{label:<20}{theta:<12.4f}{beta:<12.4f}{se_beta:<10.4f}{ks:<10.4f}{pf:<15.6f}{pf50:.6f}")
     if fsi_manager:
         fsi_manager.cleanup()
-
 
 if __name__ == "__main__":
     import argparse
