@@ -23,7 +23,10 @@ convergence:
   beta_tol: 0.005
 
 thresholds:
-  Flutter_DS4: ["Ucr", 0.0]
+  DS1: ["Ucr_norm", 0.25]
+  DS2: ["Ucr_norm", 0.50]
+  DS3: ["Ucr_norm", 0.75]
+  DS4: ["Ucr_norm", 1.00]
   Displacement_DS1: ["sigma_q", 0.1]
   Displacement_DS2: ["sigma_q", 0.2]
   Displacement_DS3: ["sigma_q", 0.3]

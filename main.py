@@ -17,6 +17,10 @@ import yaml
 from scipy.optimize import brentq
 from scipy.stats import gumbel_r, kstest, lognorm, uniform
 from scipy.stats._distn_infrastructure import rv_frozen
+
+from scipy.interpolate import interp1d
+from scipy.linalg import eig
+
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import PolynomialFeatures
 
@@ -158,6 +162,86 @@ def run_simplified_simulation(sample: Dict[str, float], *, seed: Optional[int] =
     logger.info("简化模型: Ucr=%.2f", ucr)
     return {"Ucr": ucr, "sigma_q": sigma_q, "sigma_a": sigma_a}
 
+
+
+def calculate_flutter_speed(
+    flutter_derivatives: Dict[str, List[float]],
+    bridge_params: Dict[str, float],
+    wind_speeds: np.ndarray,
+) -> Tuple[Optional[float], Optional[float], List[float]]:
+    """基于颤振导数计算临界风速。"""
+    k_ref = np.array(flutter_derivatives["K"])
+    h1 = np.array(flutter_derivatives["H1"])
+    h2 = np.array(flutter_derivatives["H2"])
+    h3 = np.array(flutter_derivatives["H3"])
+    h4 = np.array(flutter_derivatives["H4"])
+    a1 = np.array(flutter_derivatives["A1"])
+    a2 = np.array(flutter_derivatives["A2"])
+    a3 = np.array(flutter_derivatives["A3"])
+    a4 = np.array(flutter_derivatives["A4"])
+
+    m = bridge_params["mass"]
+    inertia = bridge_params["inertia"]
+    f_h = bridge_params["f_h"]
+    f_alpha = bridge_params["f_alpha"]
+    zeta_h = bridge_params["damping_h"]
+    zeta_a = bridge_params["damping_alpha"]
+    b = bridge_params["width"]
+    rho = bridge_params.get("density", 1.25)
+
+    omega_h = 2 * math.pi * f_h
+    omega_a = 2 * math.pi * f_alpha
+
+    h1_i = interp1d(k_ref, h1, kind="cubic", fill_value="extrapolate")
+    h2_i = interp1d(k_ref, h2, kind="cubic", fill_value="extrapolate")
+    h3_i = interp1d(k_ref, h3, kind="cubic", fill_value="extrapolate")
+    h4_i = interp1d(k_ref, h4, kind="cubic", fill_value="extrapolate")
+    a1_i = interp1d(k_ref, a1, kind="cubic", fill_value="extrapolate")
+    a2_i = interp1d(k_ref, a2, kind="cubic", fill_value="extrapolate")
+    a3_i = interp1d(k_ref, a3, kind="cubic", fill_value="extrapolate")
+    a4_i = interp1d(k_ref, a4, kind="cubic", fill_value="extrapolate")
+
+    damping_results: List[float] = []
+    critical_speed: Optional[float] = None
+    flutter_freq: Optional[float] = None
+
+    for u in wind_speeds:
+        freq_range = np.linspace(0.5 * min(f_h, f_alpha), 2 * max(f_h, f_alpha), 100)
+        min_damp = float("inf")
+        freq_at_min = freq_range[0]
+        for f in freq_range:
+            w = 2 * math.pi * f
+            k = w * b / u
+            h1_v = h1_i(k)
+            h2_v = h2_i(k)
+            h3_v = h3_i(k)
+            h4_v = h4_i(k)
+            a1_v = a1_i(k)
+            a2_v = a2_i(k)
+            a3_v = a3_i(k)
+            a4_v = a4_i(k)
+
+            c_struct = np.array([[2 * m * zeta_h * omega_h, 0.0], [0.0, 2 * inertia * zeta_a * omega_a]])
+            k_struct = np.array([[m * omega_h ** 2, 0.0], [0.0, inertia * omega_a ** 2]])
+            c_aero = 0.5 * rho * u * b * np.array([[k * h1_v, k * h2_v * b], [k * a1_v * b, k * a2_v * b ** 2]])
+            k_aero = 0.5 * rho * u ** 2 * np.array([[k ** 2 * h4_v, k ** 2 * h3_v * b], [k ** 2 * a4_v * b, k ** 2 * a3_v * b ** 2]])
+            c_total = c_struct - c_aero
+            k_total = k_struct - k_aero
+            zeros = np.zeros((2, 2))
+            ident = np.eye(2)
+            a_mat = np.block([[zeros, ident], [-np.linalg.inv(np.diag([m, inertia])) @ k_total, -np.linalg.inv(np.diag([m, inertia])) @ c_total]])
+            eigvals = eig(a_mat)[0]
+            max_real = float(np.max(eigvals.real))
+            if max_real < min_damp:
+                min_damp = max_real
+                freq_at_min = f
+        damping_results.append(min_damp)
+        if len(damping_results) > 1 and damping_results[-2] >= 0 > min_damp:
+            u_prev = wind_speeds[len(damping_results) - 2]
+            d_prev = damping_results[-2]
+            critical_speed = u_prev + (0 - d_prev) * (u - u_prev) / (min_damp - d_prev)
+            flutter_freq = freq_at_min
+    return critical_speed, flutter_freq, damping_results
 
 def run_coupled_simulation(fsi_manager: Optional[FSISimulationManager], sample: Dict[str, float], *, use_fsi: bool = True, seed: Optional[int] = None) -> Dict[str, float]:
     if fsi_manager and use_fsi:
@@ -302,6 +386,11 @@ def create_limit_state(expr: str) -> Callable[[float, Dict[str, float]], float]:
     return func
 
 
+# Normalized limit-state function: (Ucr - U10)/Ucr
+def create_normalized_limit_state() -> Callable[[float, Dict[str, float]], float]:
+    """Return normalized residual safety margin."""
+    return lambda ucr, sample: (ucr - sample["U10"]) / ucr
+
 class ReliabilitySolver:
     def __init__(self, g_func: Callable[[float, Dict[str, float]], float]) -> None:
         self.g_func = g_func
@@ -414,10 +503,13 @@ def compute_capacity(rsm: MultiRSM, dists: Dict[str, rv_frozen], indicator: str,
     std_u = dists["U10"].std()
     capacities: List[float] = []
     for a in alpha_samples:
-        if indicator == "Ucr":
+        if indicator in ("Ucr", "Ucr_norm"):
             def func(u: float) -> float:
                 df = pd.DataFrame({"U10": [u], "alpha": [a]})
-                return rsm.predict("Ucr", df)[0] - u
+                ucr_pred = rsm.predict("Ucr", df)[0]
+                if indicator == "Ucr_norm":
+                    return (ucr_pred - u) / ucr_pred - thresh
+                return ucr_pred - u
             try:
                 u_low = 1.0
                 u_high = mu_u + 6 * std_u
@@ -474,9 +566,9 @@ def compute_annual_pf(dists: Dict[str, rv_frozen], cap_pair: Tuple[np.ndarray, n
     rng = np.random.default_rng(seed)
     idx = rng.integers(0, valid.sum(), size=n_mc)
     cap_samples = caps[valid][idx]
+    _ = alphas[valid][idx]  # keep angle pairing for clarity
     u10_samples = dists["U10"].rvs(size=n_mc, random_state=rng)
     return float(np.mean(u10_samples > cap_samples))
-
 
 # ---------------------------------------------------------------------------
 # Main entry
@@ -504,7 +596,8 @@ def main(log_level: str = "INFO") -> None:
         except Exception as exc:  # pragma: no cover - external dependency
             _log_exc("FSI管理器初始化失败", exc)
             use_fsi = False
-    g_func = create_limit_state(g_expr)
+    # Use normalized limit state regardless of expression
+    g_func = create_normalized_limit_state()
     rsm, history = iterate_until_convergence(
         fsi_manager,
         mu,
@@ -533,7 +626,6 @@ def main(log_level: str = "INFO") -> None:
         print(f"{label:<20}{theta:<12.4f}{beta:<12.4f}{se_beta:<10.4f}{ks:<10.4f}{pf:<15.6f}{pf50:.6f}")
     if fsi_manager:
         fsi_manager.cleanup()
-
 
 if __name__ == "__main__":
     import argparse
