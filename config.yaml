@@ -1,26 +1,32 @@
 # config.yaml
-# Workbench设置
 wbpj_template: "bridge_fsi_template.wbpj"
 working_dir: "fsi_simulations"
 
-# 随机变量参数
 random_vars:
-  V_b_100: 28.5  # 基本风速 (m/s)
-  beta_coeff: 0.12  # Gumbel分布系数
+  V_b_100: 28.5
+  beta_coeff: 0.12
 
-# 优化参数
 nsga_pop: 80
 nsga_gen: 60
 
-# 收敛参数
+sampling:
+  initial_scale: 1.0
+  shrink: 0.8
+  min_scale: 0.2
+
+random_seed: 42
+limit_state: "Ucr - U10"
+
 convergence:
   max_iter: 15
   tol: 0.01
   beta_tol: 0.005
 
-# 损伤阈值
 thresholds:
-  Flutter_DS4: ["Ucr", 0.0]
+  DS1: ["Ucr_norm", 0.25]
+  DS2: ["Ucr_norm", 0.50]
+  DS3: ["Ucr_norm", 0.75]
+  DS4: ["Ucr_norm", 1.00]
   Displacement_DS1: ["sigma_q", 0.1]
   Displacement_DS2: ["sigma_q", 0.2]
   Displacement_DS3: ["sigma_q", 0.3]
@@ -28,5 +34,18 @@ thresholds:
   Acceleration_DS2: ["sigma_a", 0.1]
   Acceleration_DS3: ["sigma_a", 0.15]
 
-# FSI仿真开关
 use_fsi: true
+
+flutter:
+  case_dir: "flutter_cases"
+  wind_speeds: [20, 25, 30, 35, 40, 45, 50, 55, 60]
+
+bridge_params:
+  mass: 15000
+  inertia: 3000000
+  f_h: 0.10491093
+  f_alpha: 0.12921779
+  damping_h: 0.005
+  damping_alpha: 0.005
+  width: 30.0
+  density: 1.25
