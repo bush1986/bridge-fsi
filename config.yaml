@@ -1,27 +1,21 @@
 # config.yaml
 wbpj_template: "bridge_fsi_template.wbpj"
 working_dir: "fsi_simulations"
-
 random_vars:
   V_b_100: 28.5
   beta_coeff: 0.12
-
 nsga_pop: 80
 nsga_gen: 60
-
 sampling:
   initial_scale: 1.0
   shrink: 0.8
   min_scale: 0.2
-
 random_seed: 42
 limit_state: "Ucr - U10"
-
 convergence:
   max_iter: 15
   tol: 0.01
   beta_tol: 0.005
-
 thresholds:
   DS1: ["Ucr_norm", 0.25]
   DS2: ["Ucr_norm", 0.50]
@@ -33,13 +27,10 @@ thresholds:
   Acceleration_DS1: ["sigma_a", 0.05]
   Acceleration_DS2: ["sigma_a", 0.1]
   Acceleration_DS3: ["sigma_a", 0.15]
-
 use_fsi: true
-
 flutter:
   case_dir: "flutter_cases"
   wind_speeds: [20, 25, 30, 35, 40, 45, 50, 55, 60]
-
 bridge_params:
   mass: 15000
   inertia: 3000000
