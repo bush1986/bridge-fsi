@@ -166,21 +166,116 @@ def run_simplified_simulation(sample: Dict[str, float], *, seed: Optional[int] =
     return {"Ucr": ucr, "sigma_q": sigma_q, "sigma_a": sigma_a}
 
 
+def compute_flutter_derivatives(
+    base_dir: Path,
+    wind_speeds: List[float],
+    *,
+    B: float = 30.0,
+    rho: float = 1.225,
+    f_h: float = 0.28,
+    f_theta: float = 0.31,
+    discard_periods: int = 5,
+) -> pd.DataFrame:
+    """Derive flutter derivatives from case results.
+
+    Each wind speed directory is expected as ``case_<U>`` containing
+    ``disp_V.csv``/``force_V.csv`` and ``disp_T.csv``/``force_T.csv``.
+    """
+    summary_rows: List[pd.DataFrame] = []
+    for U in wind_speeds:
+        case_dir = base_dir / f"case_{U}"
+        df_v = pd.read_csv(case_dir / "disp_V.csv").merge(
+            pd.read_csv(case_dir / "force_V.csv"), on="Time"
+        )
+        df_t = pd.read_csv(case_dir / "disp_T.csv").merge(
+            pd.read_csv(case_dir / "force_T.csv"), on="Time"
+        )
+        df_v = df_v[df_v["Time"] >= discard_periods * (1 / f_h)].reset_index(drop=True)
+        df_t = df_t[df_t["Time"] >= discard_periods * (1 / f_theta)].reset_index(drop=True)
+
+        t_v = df_v["Time"].to_numpy()
+        dt_v = t_v[1] - t_v[0]
+        w = df_v["w"].to_numpy()
+        wdot = np.gradient(w, dt_v)
+        w_b = w / B
+        wdot_b = (B / U) * wdot
+
+        cl_v = df_v["Lift"].to_numpy() / (0.5 * rho * U ** 2 * B)
+        cm_v = df_v["Moment"].to_numpy() / (0.5 * rho * U ** 2 * B ** 2)
+
+        term = 2 * math.pi
+        A_v = np.column_stack([w_b, wdot_b])
+        H1, H2 = np.linalg.lstsq(A_v, cl_v / term, rcond=None)[0]
+        H3, H4 = np.linalg.lstsq(A_v, cm_v / term, rcond=None)[0]
+
+        t_t = df_t["Time"].to_numpy()
+        dt_t = t_t[1] - t_t[0]
+        theta = df_t["theta"].to_numpy()
+        thetad = np.gradient(theta, dt_t)
+        theta_b = theta
+        thetad_b = (B / U) * thetad
+
+        cl_t = df_t["Lift"].to_numpy() / (0.5 * rho * U ** 2 * B)
+        cm_t = df_t["Moment"].to_numpy() / (0.5 * rho * U ** 2 * B ** 2)
+        A_t = np.column_stack([theta_b, thetad_b])
+        A1, A2 = np.linalg.lstsq(A_t, cl_t / term, rcond=None)[0]
+        A3, A4 = np.linalg.lstsq(A_t, cm_t / term, rcond=None)[0]
+
+        k_val = 2 * math.pi * f_h * B / U
+        single_df = pd.DataFrame(
+            {
+                "U": [U],
+                "k": [k_val],
+                "H1": [H1],
+                "H2": [H2],
+                "H3": [H3],
+                "H4": [H4],
+                "A1": [A1],
+                "A2": [A2],
+                "A3": [A3],
+                "A4": [A4],
+            }
+        )
+        out_file = base_dir / f"flutter_derivatives_U{int(U)}.csv"
+        single_df.to_csv(out_file, index=False)
+        summary_rows.append(single_df)
+
+    summary_df = pd.concat(summary_rows, ignore_index=True)
+    summary_file = base_dir / "flutter_derivatives_batch.csv"
+    summary_df.to_csv(summary_file, index=False)
+    return summary_df
+
+
 def calculate_flutter_speed(
-    flutter_derivatives: Dict[str, List[float]],
+    flutter_derivatives: pd.DataFrame | Dict[str, List[float]],
     bridge_params: Dict[str, float],
     wind_speeds: np.ndarray,
 ) -> Tuple[Optional[float], Optional[float], List[float]]:
     """基于颤振导数计算临界风速。"""
-    k_ref = np.array(flutter_derivatives["K"])
-    h1 = np.array(flutter_derivatives["H1"])
-    h2 = np.array(flutter_derivatives["H2"])
-    h3 = np.array(flutter_derivatives["H3"])
-    h4 = np.array(flutter_derivatives["H4"])
-    a1 = np.array(flutter_derivatives["A1"])
-    a2 = np.array(flutter_derivatives["A2"])
-    a3 = np.array(flutter_derivatives["A3"])
-    a4 = np.array(flutter_derivatives["A4"])
+    if isinstance(flutter_derivatives, pd.DataFrame):
+        fd = {
+            "K": flutter_derivatives["k"].tolist(),
+            "H1": flutter_derivatives["H1"].tolist(),
+            "H2": flutter_derivatives["H2"].tolist(),
+            "H3": flutter_derivatives["H3"].tolist(),
+            "H4": flutter_derivatives["H4"].tolist(),
+            "A1": flutter_derivatives["A1"].tolist(),
+            "A2": flutter_derivatives["A2"].tolist(),
+            "A3": flutter_derivatives["A3"].tolist(),
+            "A4": flutter_derivatives["A4"].tolist(),
+        }
+    else:
+        fd = flutter_derivatives
+
+    k_ref = np.array(fd["K"])
+    h1 = np.array(fd["H1"])
+    h2 = np.array(fd["H2"])
+    h3 = np.array(fd["H3"])
+    h4 = np.array(fd["H4"])
+    a1 = np.array(fd["A1"])
+    a2 = np.array(fd["A2"])
+    a3 = np.array(fd["A3"])
+    a4 = np.array(fd["A4"])
 
     m = bridge_params["mass"]
     inertia = bridge_params["inertia"]
