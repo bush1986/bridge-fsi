@@ -2,11 +2,8 @@ import importlib
 import sys
 from pathlib import Path
 import pandas as pd
-
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 mod = importlib.import_module('bridge_wind_fragility')
-
-
 def test_multi_rsm_fit():
     mu, std, dists = mod.define_random_variables()
     samples = mod.generate_ccd_samples(mu, std, n_center=1)
@@ -16,8 +13,6 @@ def test_multi_rsm_fit():
     rsm.fit_all(samples, df)
     preds = rsm.predict('Ucr', samples)
     assert preds.shape[0] == len(samples)
-
-
 def test_iterate_convergence():
     mu, std, dists = mod.define_random_variables()
     g = mod.create_limit_state("Ucr - U10")

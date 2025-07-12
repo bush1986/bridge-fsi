@@ -1,13 +1,9 @@
 import importlib
 import sys
 from pathlib import Path
-
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 mod = importlib.import_module('bridge_wind_fragility')
-
 generate_ccd_samples = mod.generate_ccd_samples
-
-
 def test_generate_ccd_samples():
     mu = {"U10": 30.0, "alpha": 0.0}
     std = {"U10": 5.0, "alpha": 1.0}

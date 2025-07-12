@@ -155,6 +155,7 @@ def generate_ccd_samples(center: Dict[str, float], std: Dict[str, float], *, k: 
     return df
 
 
+
 def compute_buffeting_rms(
     u: float,
     *,
@@ -921,7 +922,6 @@ def main(log_level: str = "INFO") -> None:
         print(f"{label:<20}{theta:<12.4f}{beta:<12.4f}{se_beta:<10.4f}{ks:<10.4f}{pf:<15.6f}{pf50:.6f}")
     if fsi_manager:
         fsi_manager.cleanup()
-
 
 if __name__ == "__main__":
     import argparse
