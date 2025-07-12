@@ -32,11 +32,11 @@ flutter:
   case_dir: "flutter_cases"
   wind_speeds: [20, 25, 30, 35, 40, 45, 50, 55, 60]
 bridge_params:
-  mass: 15000
-  inertia: 3000000
+  mass: 1500
+  inertia: 2.35
   f_h: 0.10491093
   f_alpha: 0.12921779
   damping_h: 0.005
   damping_alpha: 0.005
-  width: 30.0
+  width: 10
   density: 1.25

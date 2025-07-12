@@ -155,13 +155,89 @@ def generate_ccd_samples(center: Dict[str, float], std: Dict[str, float], *, k: 
     return df
 
 
+
+def compute_buffeting_rms(
+    u: float,
+    *,
+    rho: float = 1.225,
+    b: float = 10.0,
+    sigma_u: Optional[float] = None,
+    sigma_w: Optional[float] = None,
+    l_u: float = 150.0,
+    l_w: float = 50.0,
+    c_l: float = 0.8,
+    c_d: float = 0.5,
+    c_m: float = 0.04,
+    c_lp: float = 4.0,
+    c_mp: float = 0.8,
+    f_bend: float = 0.10491093,
+    zeta_b: float = 0.005,
+    f_tors: float = 0.12921779,
+    zeta_t: float = 0.005,
+) -> Dict[str, float]:
+    """Compute RMS of buffeting response for a given mean wind speed."""
+    sigma_u = sigma_u if sigma_u is not None else 0.15 * u
+    sigma_w = sigma_w if sigma_w is not None else 0.10 * u
+
+    def von_karman(omega: np.ndarray, sigma: float, L: float, U: float) -> np.ndarray:
+        num = 4 * sigma**2 * L / U
+        den = (1 + 70.8 * (omega * L / U) ** 2) ** (5 / 6)
+        return num / den
+
+    def admittance(omega: np.ndarray, B: float, U: float) -> np.ndarray:
+        K = omega * B / U
+        return 1.0 / np.sqrt(1 + (2 * K) ** 2)
+
+    def buffeting_spectrum(omega: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        Su = von_karman(omega, sigma_u, l_u, u)
+        Sw = von_karman(omega, sigma_w, l_w, u)
+        chi2 = admittance(omega, b, u) ** 2
+        SL = (
+            (0.5 * rho * u**2 * b) ** 2
+            * ((2 * c_l / u) ** 2 * Su + ((c_lp + c_d) / u) ** 2 * Sw)
+            * chi2
+        )
+        SM = (
+            (0.5 * rho * u**2 * b**2) ** 2
+            * ((2 * c_m / u) ** 2 * Su + (c_mp / u) ** 2 * Sw)
+            * chi2
+        )
+        return SL, SM
+
+    def h_disp(omega: np.ndarray, omega_n: float, zeta: float) -> np.ndarray:
+        r = omega / omega_n
+        return 1.0 / np.sqrt((1 - r**2) ** 2 + (2 * zeta * r) ** 2)
+
+    omega = np.linspace(0.01, 20 * 2 * math.pi, 20000)
+    SL, SM = buffeting_spectrum(omega)
+    Hb = h_disp(omega, 2 * math.pi * f_bend, zeta_b)
+    Ht = h_disp(omega, 2 * math.pi * f_tors, zeta_t)
+    Sq_b = Hb**2 * SL
+    Sth_t = Ht**2 * SM
+    Sa_b = (omega**2) ** 2 * Hb**2 * SL
+    Sa_t = (omega**2) ** 2 * Ht**2 * SM
+
+    sigma_q = float(np.sqrt(np.trapz(Sq_b, omega)))
+    sigma_theta = float(np.sqrt(np.trapz(Sth_t, omega)))
+    sigma_ddq = float(np.sqrt(np.trapz(Sa_b, omega)))
+    sigma_ddtheta = float(np.sqrt(np.trapz(Sa_t, omega)))
+
+    return {
+        "sigma_q": sigma_q,
+        "sigma_theta": sigma_theta,
+        "sigma_ddq": sigma_ddq,
+        "sigma_ddtheta": sigma_ddtheta,
+    }
+
+
 def run_simplified_simulation(sample: Dict[str, float], *, seed: Optional[int] = None) -> Dict[str, float]:
     rng = np.random.default_rng(seed)
     u10 = sample["U10"]
     alpha = sample["alpha"]
     ucr = 40.0 - 1.5 * alpha + rng.normal(0.0, 1.0)
-    sigma_q = 0.01 * u10 ** 2 + 0.05 * alpha + rng.normal(0.0, 0.005)
-    sigma_a = 0.005 * u10 ** 3 + 0.1 * alpha + rng.normal(0.0, 0.001)
+    buff = compute_buffeting_rms(u10)
+    sigma_q = buff["sigma_q"]
+    sigma_a = buff["sigma_ddq"]
     logger.info("简化模型: Ucr=%.2f", ucr)
     return {"Ucr": ucr, "sigma_q": sigma_q, "sigma_a": sigma_a}
 
@@ -846,7 +922,6 @@ def main(log_level: str = "INFO") -> None:
         print(f"{label:<20}{theta:<12.4f}{beta:<12.4f}{se_beta:<10.4f}{ks:<10.4f}{pf:<15.6f}{pf50:.6f}")
     if fsi_manager:
         fsi_manager.cleanup()
-
 
 if __name__ == "__main__":
     import argparse
